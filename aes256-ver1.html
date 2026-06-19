@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AES 安全加密工具</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f6;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            width: 600px;
+        }
+        h2 { text-align: center; color: #333; margin-top: 0; }
+        .input-group { margin-bottom: 1rem; }
+        label { display: block; margin-bottom: 5px; color: #666; font-size: 14px; }
+        input[type="password"], textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            box-sizing: border-box;
+            font-size: 14px;
+        }
+        textarea { height: 150px; resize: vertical; }
+        .btn-group {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-top: 1rem;
+        }
+        button {
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        .btn-encrypt { background-color: #4CAF50; color: white; }
+        .btn-decrypt { background-color: #2196F3; color: white; }
+        .btn-copy { background-color: #ff9800; color: white; }
+        .btn-clear { background-color: #f44336; color: white; }
+        button:hover { opacity: 0.8; }
+        button:active { transform: scale(0.98); }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>AES-GCM 加密解密</h2>
+    
+    <div class="input-group">
+        <label>解密/加密 密码</label>
+        <input type="password" id="password" placeholder="请输入强密码...">
+    </div>
+
+    <div class="input-group">
+        <label>文本内容 (明文 或 Base64密文)</label>
+        <textarea id="text-area" placeholder="在这里输入要处理的文本..."></textarea>
+    </div>
+
+    <div class="btn-group">
+        <button class="btn-encrypt" onclick="handleEncrypt()">加密</button>
+        <button class="btn-decrypt" onclick="handleDecrypt()">解密</button>
+        <button class="btn-copy" onclick="copyResult()">复制结果</button>
+        <button class="btn-clear" onclick="clearAll()">清空</button>
+    </div>
+</div>
+
+<script>
+    /**
+     * 配置参数
+     */
+    const PBKDF2_ITERATIONS = 100000; // KDF 迭代次数
+    const SALT_SIZE = 16;             // 盐值长度 16 bytes
+    const IV_SIZE = 12;               // GCM 推荐 IV 长度 12 bytes
+
+    // 辅助函数：字符串转字节数组
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+
+    /**
+     * 核心：使用 PBKDF2 从密码派生 AES 密钥
+     */
+    async function deriveKey(password, salt) {
+        const passwordKey = await crypto.subtle.importKey(
+            "raw", enc.encode(password), 
+            { name: "PBKDF2" }, false, ["deriveKey"]
+        );
+        return crypto.subtle.deriveKey(
+            {
+                name: "PBKDF2",
+                salt: salt,
+                iterations: PBKDF2_ITERATIONS,
+                hash: "SHA-256"
+            },
+            passwordKey,
+            { name: "AES-GCM", length: 256 },
+            false,
+            ["encrypt", "decrypt"]
+        );
+    }
+
+    /**
+     * 加密流程
+     */
+    async function encryptText(text, password) {
+        try {
+            const salt = crypto.getRandomValues(new Uint8Array(SALT_SIZE));
+            const iv = crypto.getRandomValues(new Uint8Array(IV_SIZE));
+            const key = await deriveKey(password, salt);
+
+            const encrypted = await crypto.subtle.encrypt(
+                { name: "AES-GCM", iv: iv },
+                key,
+                enc.encode(text)
+            );
+
+            // 结果拼接: [salt(16)] + [iv(12)] + [ciphertext]
+            const combined = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
+            combined.set(salt, 0);
+            combined.set(iv, salt.length);
+            combined.set(new Uint8Array(encrypted), salt.length + iv.length);
+
+            // 转为 Base64
+            return btoa(String.fromCharCode(...combined));
+        } catch (e) {
+            throw new Error("加密失败: " + e.message);
+        }
+    }
+
+    /**
+     * 解密流程
+     */
+    async function decryptText(base64Data, password) {
+        try {
+            // Base64 解码
+            const combined = new Uint8Array(atob(base64Data).split("").map(c => c.charCodeAt(0)));
+            
+            // 拆分数据
+            const salt = combined.slice(0, SALT_SIZE);
+            const iv = combined.slice(SALT_SIZE, SALT_SIZE + IV_SIZE);
+            const ciphertext = combined.slice(SALT_SIZE + IV_SIZE);
+
+            const key = await deriveKey(password, salt);
+
+            const decrypted = await crypto.subtle.decrypt(
+                { name: "AES-GCM", iv: iv },
+                key,
+                ciphertext
+            );
+
+            return dec.decode(decrypted);
+        } catch (e) {
+            throw new Error("解密失败 (密码错误或数据损坏)");
+        }
+    }
+
+    /**
+     * UI 交互逻辑
+     */
+    async function handleEncrypt() {
+        const pwd = document.getElementById('password').value;
+        const text = document.getElementById('text-area').value;
+        if (!pwd || !text) return alert("请输入密码和内容！");
+
+        try {
+            const result = await encryptText(text, pwd);
+            document.getElementById('text-area').value = result;
+        } catch (e) {
+            alert(e.message);
+        }
+    }
+
+    async function handleDecrypt() {
+        const pwd = document.getElementById('password').value;
+        const text = document.getElementById('text-area').value;
+        if (!pwd || !text) return alert("请输入密码和待解密密文！");
+
+        try {
+            const result = await decryptText(text, pwd);
+            document.getElementById('text-area').value = result;
+        } catch (e) {
+            alert(e.message);
+        }
+    }
+
+    function copyResult() {
+        const area = document.getElementById('text-area');
+        area.select();
+        document.execCommand('copy');
+        alert("已复制到剪贴板");
+    }
+
+    function clearAll() {
+        document.getElementById('password').value = "";
+        document.getElementById('text-area').value = "";
+    }
+</script>
+
+</body>
+</html>
